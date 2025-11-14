@@ -1,93 +1,173 @@
-import { useState } from 'react'
-import OpenAI from 'openai'
+import { useState, useEffect } from "react";
+import OpenAI from "openai";
 
 function App() {
-  const [questions, setQuestions] = useState([])
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [password, setPassword] = useState("");
+  const [passwordError, setPasswordError] = useState("");
+  const [checkingAuth, setCheckingAuth] = useState(true);
+  const [questions, setQuestions] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  // Check authentication status on mount
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const response = await fetch("/api/verify", {
+          credentials: "include", // Important: sends cookies
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          setIsAuthenticated(data.authenticated === true);
+        } else {
+          setIsAuthenticated(false);
+        }
+      } catch (error) {
+        console.error("Auth check failed:", error);
+        setIsAuthenticated(false);
+      } finally {
+        setCheckingAuth(false);
+      }
+    };
+
+    checkAuth();
+  }, []);
+
+  const handlePasswordSubmit = async (e) => {
+    e.preventDefault();
+    setPasswordError("");
+
+    try {
+      const response = await fetch("/api/auth", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include", // Important: sends and receives cookies
+        body: JSON.stringify({ password: password.trim() }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        setIsAuthenticated(true);
+        setPassword("");
+      } else {
+        setPasswordError(data.error || "Incorrect password. Please try again.");
+        setPassword("");
+      }
+    } catch (error) {
+      console.error("Auth error:", error);
+      setPasswordError("Error connecting to server. Please try again.");
+    }
+  };
 
   const parseQuestions = (text) => {
-    const questions = []
-    const lines = text.split('\n').filter(line => line.trim())
-    
-    let currentQuestion = null
-    let currentAnswers = []
-    
+    const questions = [];
+    const lines = text.split("\n").filter((line) => line.trim());
+
+    let currentQuestion = null;
+    let currentAnswers = [];
+
     for (let i = 0; i < lines.length; i++) {
-      const trimmed = lines[i].trim()
-      
+      const trimmed = lines[i].trim();
+
       // Check if line is a question (starts with number, Q, or Question, or ends with ?)
       if (trimmed.match(/^(\d+[.)]\s*|Q\d+[:.]\s*|Question\s+\d+[:.]\s*)/i)) {
         // Save previous question if exists (accept 2+ answers for this-or-that, 10 for scale, 4+ for others)
         if (currentQuestion && currentAnswers.length >= 2) {
           questions.push({
             question: currentQuestion,
-            answers: currentAnswers
-          })
+            answers: currentAnswers,
+          });
         }
         // Start new question - remove the prefix
-        currentQuestion = trimmed.replace(/^(\d+[.)]\s*|Q\d+[:.]\s*|Question\s+\d+[:.]\s*)/i, '').trim()
-        currentAnswers = []
-      } 
+        currentQuestion = trimmed
+          .replace(/^(\d+[.)]\s*|Q\d+[:.]\s*|Question\s+\d+[:.]\s*)/i, "")
+          .trim();
+        currentAnswers = [];
+      }
       // Check if line is an answer option (starts with letter a-z, dash, bullet, or number)
-      else if (trimmed.match(/^([a-z][.)]\s*|[-•*]\s*|\d+[.)]\s*)/i) && trimmed.length < 200) {
-        const answer = trimmed.replace(/^([a-z][.)]\s*|[-•*]\s*|\d+[.)]\s*)/i, '').trim()
+      else if (
+        trimmed.match(/^([a-z][.)]\s*|[-•*]\s*|\d+[.)]\s*)/i) &&
+        trimmed.length < 200
+      ) {
+        const answer = trimmed
+          .replace(/^([a-z][.)]\s*|[-•*]\s*|\d+[.)]\s*)/i, "")
+          .trim();
         if (answer && currentQuestion) {
-          currentAnswers.push(answer)
+          currentAnswers.push(answer);
         }
       }
       // Special handling for scale questions - if we see "1" through "10" as separate lines
-      else if (currentQuestion && /^(\d+)$/.test(trimmed) && parseInt(trimmed) >= 1 && parseInt(trimmed) <= 10) {
-        currentAnswers.push(trimmed)
+      else if (
+        currentQuestion &&
+        /^(\d+)$/.test(trimmed) &&
+        parseInt(trimmed) >= 1 &&
+        parseInt(trimmed) <= 10
+      ) {
+        currentAnswers.push(trimmed);
       }
       // If line ends with ? and we don't have a current question, it might be a question
-      else if (trimmed.endsWith('?') && trimmed.length > 15 && !currentQuestion) {
-        currentQuestion = trimmed
-        currentAnswers = []
+      else if (
+        trimmed.endsWith("?") &&
+        trimmed.length > 15 &&
+        !currentQuestion
+      ) {
+        currentQuestion = trimmed;
+        currentAnswers = [];
       }
       // If we have a question but no answers yet, and this line looks like an answer
-      else if (currentQuestion && currentAnswers.length === 0 && trimmed.length < 200 && !trimmed.endsWith('?')) {
+      else if (
+        currentQuestion &&
+        currentAnswers.length === 0 &&
+        trimmed.length < 200 &&
+        !trimmed.endsWith("?")
+      ) {
         // Might be an answer without a prefix
-        currentAnswers.push(trimmed)
+        currentAnswers.push(trimmed);
       }
     }
-    
+
     // Add last question if it has at least 2 answers
     if (currentQuestion && currentAnswers.length >= 2) {
       questions.push({
         question: currentQuestion,
-        answers: currentAnswers
-      })
+        answers: currentAnswers,
+      });
     }
-    
-    return questions
-  }
+
+    return questions;
+  };
 
   const generateQuestions = async () => {
-    setLoading(true)
-    setError('')
-    setQuestions([])
+    setLoading(true);
+    setError("");
+    setQuestions([]);
 
     try {
-      const today = new Date()
-      const dateStr = today.toLocaleDateString('en-US', { 
-        weekday: 'long', 
-        year: 'numeric', 
-        month: 'long', 
-        day: 'numeric' 
-      })
-      
+      const today = new Date();
+      const dateStr = today.toLocaleDateString("en-US", {
+        weekday: "long",
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      });
+
       const openai = new OpenAI({
         apiKey: import.meta.env.VITE_OPENAI_API_KEY,
-        dangerouslyAllowBrowser: true
-      })
+        dangerouslyAllowBrowser: true,
+      });
 
       const completion = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         messages: [
           {
             role: "system",
-            content: "You are a creative assistant that generates fun, engaging survey questions for office whiteboards. Your questions should be pop-culture themed, lighthearted, comical, and spark conversation among coworkers. You MUST always generate exactly 4 questions. At least one question MUST be a 'scale of 1-10' question (e.g., 'On a scale of 1-10, how do you...'). Mix different question types: preference questions (this or that), scale questions (1-10), and some with whimsical, comical answer options."
+            content:
+              "You are a creative assistant that generates fun, engaging survey questions for office whiteboards. Your questions should be pop-culture themed, lighthearted, comical, and spark conversation among coworkers. You MUST always generate exactly 4 questions. At least one question MUST be a 'scale of 1-10' question (e.g., 'On a scale of 1-10, how do you...'). Mix different question types: preference questions (this or that), scale questions (1-10), and some with whimsical, comical answer options.",
           },
           {
             role: "user",
@@ -133,52 +213,109 @@ c) Option 3
 d) Option 4
 e) Option 5
 
-Remember: Always generate exactly 4 questions, and at least one must be a "scale of 1-10" question!`
-          }
+Remember: Always generate exactly 4 questions, and at least one must be a "scale of 1-10" question!`,
+          },
         ],
         temperature: 0.95,
-        max_tokens: 1000
-      })
+        max_tokens: 1000,
+      });
 
-      const generatedText = completion.choices[0]?.message?.content?.trim()
+      const generatedText = completion.choices[0]?.message?.content?.trim();
       if (generatedText) {
-        const parsedQuestions = parseQuestions(generatedText)
+        const parsedQuestions = parseQuestions(generatedText);
         if (parsedQuestions.length === 4) {
-          setQuestions(parsedQuestions)
+          setQuestions(parsedQuestions);
         } else if (parsedQuestions.length > 0) {
           // If we got some questions but not exactly 4, take the first 4 or pad if needed
           if (parsedQuestions.length > 4) {
-            setQuestions(parsedQuestions.slice(0, 4))
+            setQuestions(parsedQuestions.slice(0, 4));
           } else {
             // If we got less than 4, still show what we have but log a warning
-            console.warn(`Expected 4 questions but got ${parsedQuestions.length}`)
-            setQuestions(parsedQuestions)
+            console.warn(
+              `Expected 4 questions but got ${parsedQuestions.length}`
+            );
+            setQuestions(parsedQuestions);
           }
         } else {
           // Fallback: try to parse differently or show raw text
-          console.log('Raw response:', generatedText)
-          setError('Failed to parse questions. Please try again.')
+          console.log("Raw response:", generatedText);
+          setError("Failed to parse questions. Please try again.");
         }
       } else {
-        setError('Failed to generate questions. Please try again.')
+        setError("Failed to generate questions. Please try again.");
       }
     } catch (err) {
-      console.error('Error generating questions:', err)
-      setError(err.message || 'Failed to generate questions. Please check your API key and try again.')
+      console.error("Error generating questions:", err);
+      setError(
+        err.message ||
+          "Failed to generate questions. Please check your API key and try again."
+      );
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }
+  };
 
   const copyToClipboard = (question, answers) => {
-    const isScaleQuestion = answers.length === 10 && /^\d+$/.test(answers[0])
-    let text
+    const isScaleQuestion = answers.length === 10 && /^\d+$/.test(answers[0]);
+    let text;
     if (isScaleQuestion) {
-      text = `${question}\nRate 1-10`
+      text = `${question}\nRate 1-10`;
     } else {
-      text = `${question}\n${answers.map((a, i) => `${String.fromCharCode(97 + i)}) ${a}`).join('\n')}`
+      text = `${question}\n${answers
+        .map((a, i) => `${String.fromCharCode(97 + i)}) ${a}`)
+        .join("\n")}`;
     }
-    navigator.clipboard.writeText(text)
+    navigator.clipboard.writeText(text);
+  };
+
+  // Show loading state while checking auth
+  if (checkingAuth) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-purple-50 via-pink-50 to-blue-50 flex items-center justify-center">
+        <div className="text-gray-600">Loading...</div>
+      </div>
+    );
+  }
+
+  // Show password form if not authenticated
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-purple-50 via-pink-50 to-blue-50 flex items-center justify-center px-4">
+        <div className="bg-white rounded-2xl shadow-xl p-8 md:p-12 max-w-md w-full">
+          <div className="text-center mb-8">
+            <h1 className="text-3xl md:text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-600 to-pink-600 mb-3">
+              Office Poller
+            </h1>
+            <p className="text-gray-600">
+              Please enter the password to continue
+            </p>
+          </div>
+
+          <form onSubmit={handlePasswordSubmit}>
+            <div className="mb-6">
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Enter password"
+                className="w-full px-4 py-3 border-2 border-purple-200 rounded-xl focus:outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-200 text-lg"
+                autoFocus
+              />
+              {passwordError && (
+                <p className="mt-2 text-sm text-red-600">{passwordError}</p>
+              )}
+            </div>
+
+            <button
+              type="submit"
+              className="w-full bg-gradient-to-r from-purple-600 to-pink-600 text-white font-semibold py-3 px-6 rounded-xl shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-200"
+            >
+              Enter
+            </button>
+          </form>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -190,14 +327,15 @@ Remember: Always generate exactly 4 questions, and at least one must be a "scale
               Office Poller
             </h1>
             <p className="text-gray-600 text-lg">
-              Generate fun, pop-culture-themed survey questions for your office whiteboard
+              Generate fun, pop-culture-themed survey questions for your office
+              whiteboard
             </p>
             <p className="text-sm text-gray-500 mt-2">
-              {new Date().toLocaleDateString('en-US', { 
-                weekday: 'long', 
-                year: 'numeric', 
-                month: 'long', 
-                day: 'numeric' 
+              {new Date().toLocaleDateString("en-US", {
+                weekday: "long",
+                year: "numeric",
+                month: "long",
+                day: "numeric",
               })}
             </p>
           </div>
@@ -210,14 +348,30 @@ Remember: Always generate exactly 4 questions, and at least one must be a "scale
             >
               {loading ? (
                 <span className="flex items-center justify-center">
-                  <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  <svg
+                    className="animate-spin -ml-1 mr-3 h-5 w-5 text-white"
+                    xmlns="http://www.w3.org/2000/svg"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                  >
+                    <circle
+                      className="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                    ></circle>
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                    ></path>
                   </svg>
                   Generating Questions...
                 </span>
               ) : (
-                '✨ Generate 4 Questions'
+                "✨ Generate 4 Questions"
               )}
             </button>
           </div>
@@ -231,51 +385,80 @@ Remember: Always generate exactly 4 questions, and at least one must be a "scale
           {questions.length > 0 && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {questions.map((item, index) => (
-                <div key={index} className="bg-gradient-to-br from-purple-50 to-pink-50 border-2 border-purple-200 rounded-xl p-6 shadow-md">
+                <div
+                  key={index}
+                  className="bg-gradient-to-br from-purple-50 to-pink-50 border-2 border-purple-200 rounded-xl p-6 shadow-md"
+                >
                   <div className="flex items-start justify-between mb-4">
                     <h2 className="text-lg font-semibold text-gray-800 flex-1">
                       {item.question}
                     </h2>
                     <button
-                      onClick={() => copyToClipboard(item.question, item.answers)}
+                      onClick={() =>
+                        copyToClipboard(item.question, item.answers)
+                      }
                       className="text-purple-600 hover:text-purple-800 transition-colors ml-2 flex-shrink-0"
                       title="Copy to clipboard"
                     >
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                      <svg
+                        className="w-5 h-5"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
+                        />
                       </svg>
                     </button>
                   </div>
                   <div>
                     {(() => {
-                      const isScaleQuestion = item.answers.length === 10 && /^\d+$/.test(item.answers[0])
+                      const isScaleQuestion =
+                        item.answers.length === 10 &&
+                        /^\d+$/.test(item.answers[0]);
                       if (isScaleQuestion) {
                         return (
                           <div className="flex flex-wrap gap-2 items-center">
-                            <span className="text-sm text-gray-600 mr-2">Rate:</span>
+                            <span className="text-sm text-gray-600 mr-2">
+                              Rate:
+                            </span>
                             {item.answers.map((answer, answerIndex) => (
-                              <span key={answerIndex} className="text-purple-600 font-medium px-2 py-1 bg-purple-50 rounded">
+                              <span
+                                key={answerIndex}
+                                className="text-purple-600 font-medium px-2 py-1 bg-purple-50 rounded"
+                              >
                                 {answer}
                               </span>
                             ))}
                           </div>
-                        )
+                        );
                       } else {
                         return (
                           <div className="space-y-2">
                             {item.answers.map((answer, answerIndex) => {
-                              const label = String.fromCharCode(97 + answerIndex)
+                              const label = String.fromCharCode(
+                                97 + answerIndex
+                              );
                               return (
-                                <div key={answerIndex} className="flex items-start">
+                                <div
+                                  key={answerIndex}
+                                  className="flex items-start"
+                                >
                                   <span className="text-purple-600 font-medium mr-2 mt-1">
                                     {label})
                                   </span>
-                                  <span className="text-gray-700">{answer}</span>
+                                  <span className="text-gray-700">
+                                    {answer}
+                                  </span>
                                 </div>
-                              )
+                              );
                             })}
                           </div>
-                        )
+                        );
                       }
                     })()}
                   </div>
@@ -286,7 +469,9 @@ Remember: Always generate exactly 4 questions, and at least one must be a "scale
 
           {questions.length === 0 && !loading && !error && (
             <div className="text-center text-gray-500 py-12">
-              <p className="text-lg">Click the button above to generate 4 fun survey questions!</p>
+              <p className="text-lg">
+                Click the button above to generate 4 fun survey questions!
+              </p>
             </div>
           )}
         </div>
@@ -296,7 +481,7 @@ Remember: Always generate exactly 4 questions, and at least one must be a "scale
         </div>
       </div>
     </div>
-  )
+  );
 }
 
-export default App
+export default App;
